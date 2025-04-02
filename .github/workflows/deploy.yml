@@ -1,0 +1,120 @@
+name: Deploy to AWS S3
+
+on:
+  push:
+    branches:
+      - development
+      - production
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18.20.4
+
+      - name: Install Bun
+        run: npm install -g bun
+
+      - name: Update Browserslist Database
+        run: npx update-browserslist-db@latest --force --no-bun 
+
+      - name: Set Environment Variables Based on Branch
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/development" ]]; then
+            echo "ENV=development" >> $GITHUB_ENV
+            echo "VITE_SOCKET_URL=${{ secrets.MAIN_VITE_SOCKET_URL }}" >> $GITHUB_ENV
+            echo "VITE_HISTORY_URL=${{ secrets.MAIN_VITE_HISTORY_URL }}" >> $GITHUB_ENV
+            echo "AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}" >> $GITHUB_ENV
+            echo "AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}" >> $GITHUB_ENV
+            echo "AWS_REGION=${{ secrets.AWS_REGION }}" >> $GITHUB_ENV
+            echo "S3_BUCKET=${{ secrets.S3_BUCKET }}" >> $GITHUB_ENV
+            echo "CLOUDFRONT_ID=${{ secrets.CLOUDFRONT_ID }}" >> $GITHUB_ENV
+          else
+            echo "ENV=production" >> $GITHUB_ENV
+            echo "VITE_SOCKET_URL=${{ secrets.PROD_VITE_SOCKET_URL }}" >> $GITHUB_ENV
+            echo "VITE_HISTORY_UR=${{ secrets.PROD_VITE_HISTORY_UR }}" >> $GITHUB_ENV
+            echo "AWS_ACCESS_KEY_ID=${{ secrets.PROD_AWS_ACCESS_KEY_ID }}" >> $GITHUB_ENV
+            echo "AWS_SECRET_ACCESS_KEY=${{ secrets.PROD_AWS_SECRET_ACCESS_KEY }}" >> $GITHUB_ENV
+            echo "AWS_REGION=${{ secrets.PROD_AWS_REGION }}" >> $GITHUB_ENV
+            echo "S3_BUCKET=${{ secrets.PROD_S3_BUCKET }}" >> $GITHUB_ENV
+            echo "CLOUDFRONT_ID=${{ secrets.PROD_CLOUDFRONT_ID }}" >> $GITHUB_ENV
+          fi
+        shell: bash
+
+      - name: Install Dependencies (Fix pixi.js Conflict)
+        run: |
+          npm install pixi-filters@5 --save
+          npm install --legacy-peer-deps
+
+      - name: Build Project
+        run: |
+          DISABLE_ESLINT_PLUGIN=true npm run build
+
+      - name: List Build Directory (Debugging)
+        run: |
+          echo "Contents of dist directory:"
+          ls -la dist/
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build
+          path: dist/
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build
+          path: dist/
+
+      - name: Verify Build Artifacts
+        run: |
+          echo "Listing contents of dist directory:"
+          ls -la dist/
+
+      - name: Set Environment Variables Based on Branch
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/development" ]]; then
+            echo "ENV=development" >> $GITHUB_ENV
+            echo "AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}" >> $GITHUB_ENV
+            echo "AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}" >> $GITHUB_ENV
+            echo "AWS_REGION=${{ secrets.AWS_REGION }}" >> $GITHUB_ENV
+            echo "S3_BUCKET=${{ secrets.S3_BUCKET }}" >> $GITHUB_ENV
+            echo "CLOUDFRONT_ID=${{ secrets.CLOUDFRONT_ID }}" >> $GITHUB_ENV
+          else
+            echo "ENV=production" >> $GITHUB_ENV
+            echo "AWS_ACCESS_KEY_ID=${{ secrets.PROD_AWS_ACCESS_KEY_ID }}" >> $GITHUB_ENV
+            echo "AWS_SECRET_ACCESS_KEY=${{ secrets.PROD_AWS_SECRET_ACCESS_KEY }}" >> $GITHUB_ENV
+            echo "AWS_REGION=${{ secrets.PROD_AWS_REGION }}" >> $GITHUB_ENV
+            echo "S3_BUCKET=${{ secrets.PROD_S3_BUCKET }}" >> $GITHUB_ENV
+            echo "CLOUDFRONT_ID=${{ secrets.PROD_CLOUDFRONT_ID }}" >> $GITHUB_ENV
+          fi
+        shell: bash
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy to S3
+        run: aws s3 sync dist/ s3://${{ secrets.S3_BUCKET }} --region ${{ secrets.AWS_REGION }}
+
+      - name: Invalidate CloudFront Cache
+        run: aws cloudfront create-invalidation --distribution-id ${{ secrets.CLOUDFRONT_ID }} --paths "/*"
